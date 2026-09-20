@@ -120,6 +120,11 @@ pub struct Tool {
     pub target: String, // .py / .jar / .exe / URL
     #[serde(default)]
     pub args: String,
+    /// 仅 Java 类工具使用：排在 `-jar` 之前的 JVM 启动参数（`-Xmx` / `-D…` 等）。
+    /// 单独一个字段而不是从 args 里猜，是因为「哪些 token 算 JVM 参数」无法从文本判定——
+    /// 应用自己的 `--port` 与 JVM 的 `-Dserver.port` 长得一样。
+    #[serde(default)]
+    pub jvm_args: String,
     #[serde(default)]
     pub env_id: Option<String>,
     #[serde(default)]

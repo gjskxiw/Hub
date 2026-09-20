@@ -42,6 +42,8 @@ export interface Tool {
   type: ToolType;
   target: string;
   args: string;
+  /** 仅 Java 类工具使用：排在 -jar 之前的 JVM 参数（-Xmx / -D… 等） */
+  jvmArgs: string;
   envId: string | null;
   groupId: string | null;
   icon: string | null;

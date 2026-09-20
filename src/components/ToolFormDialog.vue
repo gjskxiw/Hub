@@ -36,6 +36,7 @@ const form = reactive<Tool>({
   type: "terminal_python",
   target: "",
   args: "",
+  jvmArgs: "",
   envId: null,
   groupId: null,
   icon: null,
@@ -49,6 +50,7 @@ function emptyTool(): Tool {
     type: "terminal_python",
     target: "",
     args: "",
+    jvmArgs: "",
     envId: null,
     groupId: null,
     icon: null,
@@ -76,6 +78,8 @@ defineExpose({ openNew, openEdit });
 
 const needFile = computed(() => form.type !== "web");
 const envKind = computed<EnvKind | null>(() => envKindForType(form.type));
+/** 只有 Java 类工具需要那个独立的 JVM 参数框 */
+const isJava = computed(() => envKind.value === "java");
 
 const envOptions = computed(() =>
   envKind.value ? store.config.envs.filter((e) => e.kind === envKind.value) : [],
@@ -110,6 +114,8 @@ watch(
       const env = store.config.envs.find((e) => e.id === form.envId);
       if (!env || env.kind !== envKind.value) form.envId = null;
     }
+    // 换到非 Java 类型：JVM 参数不再参与拼装，清掉免得配置里留个界面上看不见的值
+    if (!isJava.value) form.jvmArgs = "";
   },
 );
 
@@ -171,11 +177,15 @@ function validate(): string | null {
       return `该类型需要 .${ext} 文件${actual ? `，当前是 .${actual}` : "（当前文件没有扩展名）"}`;
     }
   }
-  // 启动参数：双引号是「这一段算一个参数」的标记，不成对会被错切；
+  // 两个参数字段共用一套规则：双引号是「这一段算一个参数」的标记，不成对会被错切；
   // 终端类还要经过 cmd，% 会被它当变量展开（& | > 已由后端逐参数包引号，无需限制）
-  if ((form.args.match(/"/g) ?? []).length % 2 !== 0) return "启动参数的双引号没有配对";
-  if (form.type.startsWith("terminal_") && form.args.includes("%")) {
-    return "终端类工具的启动参数不能含 %，cmd 会把它当作变量展开";
+  const argFields: [string, string][] = [["启动参数", form.args]];
+  if (isJava.value) argFields.push(["JVM 参数", form.jvmArgs]);
+  for (const [label, raw] of argFields) {
+    if ((raw.match(/"/g) ?? []).length % 2 !== 0) return `${label}的双引号没有配对`;
+    if (form.type.startsWith("terminal_") && raw.includes("%")) {
+      return `终端类工具的${label}不能含 %，cmd 会把它当作变量展开`;
+    }
   }
   // Java / Python 类工具必须绑定运行环境（后端不再回退系统 PATH）。
   // 本弹窗是模态的，顶栏的环境入口被遮罩挡住，所以缺环境时要点明得先关掉本窗口去添加
@@ -295,6 +305,13 @@ async function save() {
               <FolderOpen />
             </Button>
           </div>
+        </div>
+
+        <!-- Java 类的 JVM 选项单独一个框：哪些 token 算 JVM 参数无法从文本猜（应用的
+             --port 和 JVM 的 -Dserver.port 长得一样），所以按字段区分，顺序固定 -->
+        <div v-if="isJava" class="space-y-1.5">
+          <Label class="text-muted-foreground">JVM 参数</Label>
+          <Input v-model="form.jvmArgs" placeholder="-Xmx512m -Dfile.encoding=UTF-8" />
         </div>
 
         <div v-if="needFile" class="space-y-1.5">

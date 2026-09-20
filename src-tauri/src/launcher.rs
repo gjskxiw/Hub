@@ -289,6 +289,16 @@ fn resolve_launch_exe(tool_type: ToolKind, env: &Env) -> LaunchExe {
     }
 }
 
+/// Java 类工具的 argv：`JVM 参数 → -jar → JAR → 程序参数`。
+/// 终端与 GUI 两条路共用它，顺序不会各自漂移；JAR 路径只认 target 字段。
+fn java_argv(tool: &Tool) -> Vec<String> {
+    let mut out = split_args(&tool.jvm_args);
+    out.push("-jar".into());
+    out.push(tool.target.clone());
+    out.extend(split_args(&tool.args));
+    out
+}
+
 /// 把工具类型 + 参数翻译成「可执行文件之后」的 argv 数组。
 ///
 /// 这里只负责切分与排序，不做引用：终端类工具由 launch_terminal 逐 token 强制包引号
@@ -296,23 +306,15 @@ fn resolve_launch_exe(tool_type: ToolKind, env: &Env) -> LaunchExe {
 /// Python / Java 的参数里带上 target（脚本或 -jar 包），exe 的 target 就是可执行文件
 /// 本身，不能再当作第一个参数重复传一遍。
 fn command_arguments(tool: &Tool) -> Vec<String> {
-    let mut out = Vec::new();
     match tool.tool_type {
         ToolKind::TerminalPython => {
-            out.push(tool.target.clone());
+            let mut out = vec![tool.target.clone()];
             out.extend(split_args(&tool.args));
+            out
         }
-        ToolKind::TerminalJava => {
-            // JVM 参数排在 -jar 之前，与 launch_gui_java 保持同一套顺序
-            let (jvm, rest) = split_java_args(&tool.args);
-            out.extend(jvm);
-            out.push("-jar".into());
-            out.push(tool.target.clone());
-            out.extend(rest);
-        }
-        _ => out.extend(split_args(&tool.args)),
+        ToolKind::TerminalJava => java_argv(tool),
+        _ => split_args(&tool.args),
     }
-    out
 }
 /// 启动前依赖检查；Err 描述缺什么。
 ///
@@ -341,17 +343,27 @@ pub fn check_tool(tool: &Tool, config: &Config) -> Result<(), String> {
     if let Some(env) = bound_env(tool, config) {
         check_env_path(format!("环境「{}」的路径", env.name).as_str(), &env.path)?;
     }
-    // split_args 把双引号当作「这一段属于同一个参数」的标记，只有一半时后面所有内容都会被
-    // 并进同一个参数 —— 与其悄悄传出一个奇怪的长参数，不如直接说明（GUI 类同样受影响）
-    if tool.tool_type != ToolKind::Web
-        && tool.tool_type != ToolKind::Unknown
-        && tool.args.chars().filter(|c| *c == DOUBLE_QUOTE).count() % 2 != 0
-    {
-        return Err("启动参数的双引号没有配对".into());
+    // 两个参数字段都用 split_args 切分：双引号是「这一段属于同一个参数」的标记，只有一半时
+    // 后面所有内容都会被并进同一个参数 —— 与其悄悄传出一个奇怪的长参数，不如直接说明。
+    // JVM 参数字段只对 Java 类有意义，其他类型即便残留也不参与拼装，就不必为它报错。
+    let java = matches!(tool.tool_type, ToolKind::TerminalJava | ToolKind::GuiJava);
+    if tool.tool_type != ToolKind::Web && tool.tool_type != ToolKind::Unknown {
+        for (label, raw) in [
+            ("启动参数", &tool.args[..]),
+            ("JVM 参数", if java { &tool.jvm_args[..] } else { "" }),
+        ] {
+            if raw.chars().filter(|c| *c == DOUBLE_QUOTE).count() % 2 != 0 {
+                return Err(format!("{label}的双引号没有配对"));
+            }
+        }
     }
-    // 终端类工具还要经过 cmd：强制包引号能压住 & | < >，压不住引号本身 / 换行 / %
+    // 终端类还要经过 cmd：强制包引号能压住 & | < >，压不住引号本身 / 换行 / %。
+    // target 不在这里查——它由下面各分支的 check_env_path 按「脚本 / JAR / EXE 路径」报。
     if is_terminal(tool.tool_type) {
-        check_cmd_args("启动参数", &command_arguments(tool))?;
+        check_cmd_args("启动参数", &split_args(&tool.args))?;
+        if java {
+            check_cmd_args("JVM 参数", &split_args(&tool.jvm_args))?;
+        }
     }
     match tool.tool_type {
         ToolKind::Unknown => Err("未知的工具类型（可能由更高版本创建，当前版本无法启动）".into()),
@@ -438,46 +450,6 @@ fn split_args(s: &str) -> Vec<String> {
     out
 }
 
-/// JVM 参数（-Xmx / -Dfoo=bar / -XX:… / --add-opens 等）排在 -jar 之前，其余作为程序参数。
-/// 若用户在参数里又写了 `-jar xxx`，忽略之（target 字段才是权威来源）。
-fn split_java_args(args: &str) -> (Vec<String>, Vec<String>) {
-    let tokens = split_args(args);
-    let mut jvm = Vec::new();
-    let mut rest = Vec::new();
-    let mut in_jvm = true;
-    let mut skip_next = false;
-    for t in tokens {
-        if skip_next {
-            skip_next = false; // 丢弃用户重复写的 jar 路径
-            continue;
-        }
-        if in_jvm && is_jvm_arg(&t) {
-            jvm.push(t);
-            continue;
-        }
-        in_jvm = false;
-        if t == "-jar" {
-            skip_next = true;
-            continue;
-        }
-        rest.push(t);
-    }
-    (jvm, rest)
-}
-
-/// 保守白名单判断 JVM 启动参数，避免把程序参数（如 --port）误吞为 JVM 参数
-fn is_jvm_arg(t: &str) -> bool {
-    t.starts_with("-X")
-        || t.starts_with("-D")
-        || t.starts_with("--add-")
-        || t.starts_with("--enable-")
-        || t.starts_with("--disable-")
-        || matches!(
-            t,
-            "-ea" | "-da" | "-esa" | "-dsa" | "-server" | "-client" | "-verbose" | "-version"
-        )
-}
-
 /// as_admin：本次是否以管理员身份启动。它不再是工具上的持久化属性，
 /// 而是右键菜单「以管理员身份运行」在调用时传入的一次性选择；仅 GUI exe 支持。
 pub fn launch(app: &AppHandle, tool: &Tool, config: &Config, as_admin: bool) -> Result<(), String> {
@@ -559,17 +531,13 @@ fn launch_terminal(tool: &Tool, config: &Config) -> Result<(), String> {
 fn launch_gui_java(tool: &Tool, config: &Config) -> Result<(), String> {
     let workdir = workdir_of(tool);
     let env = require_env(tool, config, EnvKind::Java, "Java")?;
-    let (jvm, rest) = split_java_args(&tool.args);
     let exe = resolve_launch_exe(tool.tool_type, env);
     if let Some(issue) = &exe.issue {
         return Err(issue.clone());
     }
 
-    let mut args: Vec<String> = Vec::with_capacity(jvm.len() + rest.len() + 2);
-    args.extend(jvm);
-    args.push("-jar".into());
-    args.push(tool.target.clone());
-    args.extend(rest);
+    // 顺序与终端类完全一致：两条路共用 java_argv
+    let args = java_argv(tool);
 
     let mut cmd = Command::new(&exe.path);
     cmd.args(&args).current_dir(&workdir);
@@ -633,6 +601,7 @@ mod tests {
             tool_type: kind,
             target: target.into(),
             args: String::new(),
+            jvm_args: String::new(),
             env_id: None,
             group_id: None,
             icon: None,
@@ -670,28 +639,6 @@ mod tests {
             vec!["C:\\Program Files\\x.exe", "-v"]
         );
         assert_eq!(split_args("--opt=\"a b\""), vec!["--opt=a b"]);
-    }
-
-    #[test]
-    fn java_args_split_jvm_before_program_args() {
-        let (jvm, rest) = split_java_args("-Xmx512m -Dfoo=bar -jar app.jar --port 8080");
-        assert_eq!(jvm, vec!["-Xmx512m", "-Dfoo=bar"]);
-        // 用户重复写的 -jar 及其路径被忽略（target 字段才是权威来源）
-        assert_eq!(rest, vec!["--port", "8080"]);
-    }
-
-    #[test]
-    fn java_args_do_not_swallow_program_args() {
-        let (jvm, rest) = split_java_args("-Xmx512m --port 8080");
-        assert_eq!(jvm, vec!["-Xmx512m"]);
-        assert_eq!(rest, vec!["--port", "8080"]);
-    }
-
-    #[test]
-    fn java_args_stop_jvm_at_first_plain_token() {
-        let (jvm, rest) = split_java_args("app.jar -Xmx512m");
-        assert!(jvm.is_empty());
-        assert_eq!(rest, vec!["app.jar", "-Xmx512m"]);
     }
 
     /// 工具类型与目标文件扩展名必须匹配（先报类型不符，再报文件不存在）
@@ -875,25 +822,42 @@ mod tests {
         assert_eq!(args, vec!["--opt=a b", r"c\d e"]);
     }
 
-    /// Java 的 -jar 由后端生成 argv，用户写在 args 里的重复 -jar 要丢弃；
-    /// JVM 参数必须保留并排在 -jar 之前（终端与 GUI 两类走同一套顺序）
+    /// Java 的 argv 顺序：JVM 参数 → -jar → JAR → 程序参数；两个字段各管各的，不再猜归属
     #[test]
-    fn command_arguments_build_java_jar_argv() {
+    fn java_argv_puts_jvm_options_before_jar() {
         let mut t = tool(ToolKind::TerminalJava, r"C:\app.jar");
-        t.args = "-Xmx512m -jar other.jar --port 8080".into();
+        t.jvm_args = "-Xmx512m -Dfoo=bar".into();
+        t.args = "--port 8080".into();
         assert_eq!(
-            command_arguments(&t),
-            vec!["-Xmx512m", "-jar", r"C:\app.jar", "--port", "8080"]
+            java_argv(&t),
+            vec!["-Xmx512m", "-Dfoo=bar", "-jar", r"C:\app.jar", "--port", "8080"]
         );
+        // 终端类交给 cmd 的那一行用的就是这个数组（GUI 类共用 java_argv，不会漂移）
+        assert_eq!(command_arguments(&t), java_argv(&t));
+        // 没填 JVM 参数时不多出空 token
+        let plain = tool(ToolKind::GuiJava, r"C:\app.jar");
+        assert_eq!(java_argv(&plain), vec!["-jar", r"C:\app.jar"]);
+    }
 
-        let mut g = tool(ToolKind::GuiJava, r"C:\app.jar");
-        g.args = "-Xmx512m -jar other.jar --port 8080".into();
-        let (jvm, rest) = split_java_args(&g.args);
-        let mut gui = jvm;
-        gui.push("-jar".into());
-        gui.push(g.target.clone());
-        gui.extend(rest);
-        assert_eq!(gui, command_arguments(&t), "终端与 GUI 的 Java 参数顺序要一致");
+    /// JVM 参数字段走同一套校验；非 Java 类型不看这个字段
+    #[test]
+    fn check_tool_validates_jvm_args_too() {
+        let cfg = Config::default();
+        let mut j = tool(ToolKind::GuiJava, r"C:\app.jar");
+        j.jvm_args = "-Xmx=\"1g".into();
+        assert!(check(&j, &cfg)
+            .unwrap_err()
+            .contains("JVM 参数的双引号没有配对"));
+
+        let mut p = tool(ToolKind::TerminalJava, r"C:\app.jar");
+        p.jvm_args = "-Dp=%PATH%".into();
+        assert!(check(&p, &cfg).unwrap_err().contains("JVM 参数含 %"));
+
+        // exe 类工具的 jvm_args 不参与拼装，因此不该为它报错（这里报的是 EXE 不存在）
+        let mut e = tool(ToolKind::GuiExe, r"C:\x\a.exe");
+        e.jvm_args = "-Xmx=\"1g".into();
+        let err = check(&e, &cfg).unwrap_err();
+        assert!(!err.contains("JVM 参数"), "{err}");
     }
 
     /// 提权路径靠 quote_windows_arg 逐参数引用，规则要与 CommandLineToArgvW 一致
