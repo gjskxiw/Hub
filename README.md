@@ -17,6 +17,7 @@ Windows · 单文件免安装 · Tauri 2 + Vue 3
 ![tauri](https://img.shields.io/badge/Tauri-2-24C8D8?style=flat-square)
 ![vue](https://img.shields.io/badge/Vue-3.5-42b883?style=flat-square)
 ![size](https://img.shields.io/badge/单文件-5.2%20MB-brightgreen?style=flat-square)
+![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 
 </div>
 
@@ -120,3 +121,9 @@ src-tauri/src/  Rust 后端：commands / config / launcher / icon / tray / shell
 - **仅 Windows**：依赖 `creation_flags`、`ShellExecuteExW`、GDI 取图标等 Win32 接口。
 - 构建**不产出安装包**（`bundle.targets` 为空），只出裸 exe——它本来就靠 `data\` 自包含。
 - 没有自动更新；`data\` 需要可写，不可写时保存配置会直接报错，不会悄悄换地方写。
+
+---
+
+## 许可
+
+MIT，详见 [LICENSE](LICENSE)。
