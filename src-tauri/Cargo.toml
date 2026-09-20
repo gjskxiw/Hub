@@ -1,6 +1,6 @@
 [package]
 name = "ovo"
-version = "2.0.0"
+version = "2.1.0"
 description = "ovo - 统一管理启动的工具箱"
 authors = ["ovo"]
 edition = "2021"

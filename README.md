@@ -13,7 +13,7 @@ Windows 上的本机工具启动面板：把散在各处的脚本、JAR、绿色
 单文件免安装 · Tauri 2 + Vue 3
 
 ![platform](https://img.shields.io/badge/platform-Windows_10%2B-0078D4?style=flat-square)
-![version](https://img.shields.io/badge/version-2.0.0-2c2c2c?style=flat-square)
+![version](https://img.shields.io/badge/version-2.1.0-2c2c2c?style=flat-square)
 ![size](https://img.shields.io/badge/单文件-5.2%20MB-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 
