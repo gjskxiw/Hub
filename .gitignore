@@ -1,0 +1,7 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# 应用把配置写在 exe 旁边的 data\ 里，调试时可能落在仓库内
+data/
